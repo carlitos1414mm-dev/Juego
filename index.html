@@ -1,0 +1,675 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Entrada Forzada</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+
+<main id="app" style="height:100%">
+  <section id="menu" class="screen">
+    <div class="menu-head">
+      <span class="kicker">Unidad táctica · Plano de operaciones</span>
+      <h1>Entrada Forzada</h1>
+      <p class="dim" style="margin:0">Estrategia por turnos. Forma tu equipo SWAT, abre puertas y limpia la casa sin perder a nadie.</p>
+    </div>
+    <div class="levels" id="levels"></div>
+  </section>
+
+  <section id="squad" class="screen" hidden>
+    <div class="hud">
+      <button class="btn mini" id="sq-back">‹ Misiones</button>
+      <div class="hud-title" id="sq-title"></div>
+    </div>
+    <div class="grow">
+      <p id="sq-brief" style="margin:0"></p>
+      <p id="sq-par" class="dim" style="margin:0;font-size:12px"></p>
+      <div class="slots" id="slots"></div>
+      <div class="ficha" id="ficha"></div>
+    </div>
+    <button class="btn primary" id="sq-go">Iniciar misión</button>
+  </section>
+
+  <section id="game" class="screen" hidden>
+    <header class="hud">
+      <button class="btn mini" id="btn-menu">‹ Salir</button>
+      <div class="hud-title" id="hud-title"></div>
+      <div class="hud-stat" id="hud-turn"></div>
+    </header>
+    <div id="board"><canvas id="cv" aria-label="Plano de la casa"></canvas></div>
+    <div class="roster" id="roster"></div>
+    <div class="info" id="info" role="status" aria-live="polite"></div>
+    <div class="actions">
+      <button class="btn primary" id="btn-fire">Disparar</button>
+      <button class="btn" id="btn-special">Especial</button>
+      <button class="btn" id="btn-next">Siguiente</button>
+      <button class="btn danger" id="btn-end">Fin turno</button>
+    </div>
+  </section>
+
+  <div class="overlay" id="result" hidden><div id="res-body"></div></div>
+</main>
+
+<script>
+window.addEventListener('error',function(e){var d=document.createElement('pre');d.style.cssText='position:fixed;left:8px;right:8px;bottom:8px;z-index:99;background:#300;color:#fff;padding:8px;font-size:11px;white-space:pre-wrap';d.textContent='Error: '+e.message+' ('+(e.filename||'').split('/').pop()+':'+e.lineno+')';document.body.appendChild(d);});
+'use strict';
+// Leyenda: # pared · . piso · , patio · D puerta cerrada · c mueble (cobertura)
+// P inicio del equipo · m matón · e escopetero · b jefe
+const MAPS = [
+  {
+    name: 'Casa de huéspedes', par: 6,
+    brief: 'Tres sospechosos armados en una casa de dos alas. Entrada por la puerta del frente.',
+    rows: [
+      '############',
+      '#....#.....#',
+      '#.c..D..m..#',
+      '#....#...c.#',
+      '####D#######',
+      '#......#...#',
+      '#.m....D.e.#',
+      '#...c..#...#',
+      '##D#########',
+      ',,,,,,,,,,,,',
+      ',,P,P,P,,,,,',
+    ],
+  },
+  {
+    name: 'Taller clandestino', par: 9,
+    brief: 'Cuatro hostiles repartidos en dos pisos de cuartos. El jefe cuida la sala del fondo.',
+    rows: [
+      '############',
+      '#...#......#',
+      '#.c.D..c.e.#',
+      '#...#......#',
+      '##D#####D###',
+      '#.m.#...m..#',
+      '#.c.D..c...#',
+      '#...#......#',
+      '###D########',
+      '#.....#....#',
+      '#.c...D..b.#',
+      '#.....#....#',
+      '#####D######',
+      ',,,,,,,,,,,,',
+      ',,P,P,P,,,,,',
+    ],
+  },
+  {
+    name: 'La mansión', par: 12,
+    brief: 'Seis hostiles, pasillo central y un salón principal. Abre con cuidado, no tienes refuerzos.',
+    rows: [
+      '############',
+      '#.....b....#',
+      '#.c.......c#',
+      '#....e.....#',
+      '##D##D##D###',
+      '#...#..#...#',
+      '#.m.D..D.m.#',
+      '#...#..#...#',
+      '#####D######',
+      '#........m.#',
+      '#.c......c.#',
+      '#.....e....#',
+      '####D#######',
+      ',,,,,,,,,,,,',
+      ',,P,P,P,,,,,',
+    ],
+  },
+];
+
+const CLASSES = {
+  asalto: {
+    name: 'Asalto', letter: 'A', hp: 10, mov: 4, rng: 7, dmg: 3, acc: 75, uses: 2,
+    special: 'Flash', cost: 1,
+    desc: 'Equilibrado. Flash: aturde a todos en radio 2 de una casilla visible (2 usos).',
+  },
+  sniper: {
+    name: 'Sniper', letter: 'S', hp: 7, mov: 3, rng: 12, dmg: 4, acc: 85, uses: 0,
+    special: 'Tiro certero', cost: 2,
+    desc: 'Largo alcance y puntería alta, frágil. Tiro certero: gasta 2 PA, no falla y hace 6 de daño.',
+  },
+  escudo: {
+    name: 'Escudo', letter: 'E', hp: 14, mov: 3, rng: 4, dmg: 4, acc: 70, uses: 0,
+    special: 'Escudo arriba', cost: 1,
+    desc: 'Aguanta más y reduce 1 el daño que recibe. Abre puertas gratis. Escudo arriba: -3 de daño hasta tu próximo turno.',
+  },
+  medico: {
+    name: 'Médico', letter: 'M', hp: 8, mov: 4, rng: 6, dmg: 2, acc: 70, uses: 2,
+    special: 'Botiquín', cost: 1,
+    desc: 'Poco daño, mucha utilidad. Botiquín: cura 5 a un aliado a 2 casillas o menos (2 usos).',
+  },
+};
+
+const ENEMIES = {
+  m: { name: 'Matón', hp: 5, dmg: 2, rng: 6, acc: 65, mov: 3 },
+  e: { name: 'Escopetero', hp: 6, dmg: 4, rng: 3, acc: 72, mov: 3 },
+  b: { name: 'Jefe', hp: 10, dmg: 3, rng: 7, acc: 72, mov: 3 },
+};
+
+'use strict';
+// Motor del juego: sin DOM, para poder probarlo en node.
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const hooks = { change() {}, end() {} };
+let SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
+const S = {};
+
+function startLevel(idx, squad) {
+  const m = MAPS[idx];
+  S.idx = idx; S.W = m.rows[0].length; S.H = m.rows.length;
+  S.grid = []; S.starts = []; S.foes = []; S.units = [];
+  m.rows.forEach((r, y) => {
+    const row = [];
+    [...r].forEach((ch, x) => {
+      if (ch === 'P') { S.starts.push([x, y]); ch = ','; }
+      if (ch === 'm' || ch === 'e' || ch === 'b') {
+        const e = ENEMIES[ch];
+        S.foes.push({ team: 'f', kind: ch, name: e.name, hp: e.hp, max: e.hp, dmg: e.dmg, rng: e.rng, acc: e.acc, mov: e.mov, x, y, alert: false, stun: 0, alive: true });
+        ch = '.';
+      }
+      row.push(ch);
+    });
+    S.grid.push(row);
+  });
+  squad.forEach((key, i) => {
+    const c = CLASSES[key]; const [x, y] = S.starts[i];
+    S.units.push({ team: 'p', key, name: c.name, hp: c.hp, max: c.hp, mov: c.mov, rng: c.rng, dmg: c.dmg, acc: c.acc, ap: 2, x, y, alive: true, uses: c.uses, shield: false });
+  });
+  S.explored = Array.from({ length: S.H }, () => Array(S.W).fill(false));
+  S.vis = Array.from({ length: S.H }, () => Array(S.W).fill(false));
+  S.turn = 1; S.phase = 'player'; S.sel = 0; S.mode = null; S.tgt = null; S.actor = null;
+  S.deaths = 0; S.fx = []; S.result = null; S.stars = 0;
+  S.info = 'Toca un operador y luego una casilla azul para moverlo. Toca una puerta pegada a él para abrirla.';
+  computeVis();
+}
+
+const inb = (x, y) => x >= 0 && y >= 0 && x < S.W && y < S.H;
+const tileAt = (x, y) => (inb(x, y) ? S.grid[y][x] : '#');
+const opaque = (x, y) => { const t = tileAt(x, y); return t === '#' || t === 'D'; };
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function unitAt(x, y) {
+  return S.units.find((u) => u.alive && u.x === x && u.y === y) || S.foes.find((f) => f.alive && f.x === x && f.y === y) || null;
+}
+const walk = (x, y) => inb(x, y) && '.,d'.includes(S.grid[y][x]) && !unitAt(x, y);
+
+function line(x0, y0, x1, y1) {
+  const pts = []; let dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx - dy, x = x0, y = y0;
+  for (;;) {
+    pts.push([x, y]);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
+  return pts;
+}
+function los(x0, y0, x1, y1) {
+  const p = line(x0, y0, x1, y1);
+  for (let i = 1; i < p.length - 1; i++) if (opaque(p[i][0], p[i][1])) return false;
+  return true;
+}
+function hasCover(x0, y0, x1, y1) {
+  const p = line(x0, y0, x1, y1);
+  for (let i = 1; i < p.length - 1; i++) if (tileAt(p[i][0], p[i][1]) === 'c') return true;
+  return false;
+}
+
+function computeVis() {
+  for (let y = 0; y < S.H; y++) S.vis[y].fill(false);
+  for (const u of S.units) {
+    if (!u.alive) continue;
+    for (let y = Math.max(0, u.y - 9); y <= Math.min(S.H - 1, u.y + 9); y++) {
+      for (let x = Math.max(0, u.x - 9); x <= Math.min(S.W - 1, u.x + 9); x++) {
+        if (Math.hypot(x - u.x, y - u.y) <= 9.5 && los(u.x, u.y, x, y)) { S.vis[y][x] = true; S.explored[y][x] = true; }
+      }
+    }
+  }
+}
+
+function reach(u) {
+  const k = (x, y) => y * S.W + x; const d = new Map([[k(u.x, u.y), 0]]); const q = [[u.x, u.y]];
+  while (q.length) {
+    const [x, y] = q.shift(); const c = d.get(k(x, y)); if (c >= u.mov) continue;
+    for (const [dx, dy] of DIRS) {
+      const nx = x + dx, ny = y + dy;
+      if (d.has(k(nx, ny)) || !walk(nx, ny)) continue;
+      d.set(k(nx, ny), c + 1); q.push([nx, ny]);
+    }
+  }
+  d.delete(k(u.x, u.y));
+  return d;
+}
+
+const inRange = (a, b) => dist(a, b) <= a.rng + 0.5 && los(a.x, a.y, b.x, b.y);
+function hitChance(a, b, perfect) {
+  if (perfect) return 100;
+  let c = a.acc - Math.max(0, Math.round(dist(a, b)) - 3) * 4;
+  if (hasCover(a.x, a.y, b.x, b.y)) c -= 25;
+  return Math.max(8, Math.min(95, c));
+}
+
+const setInfo = (t) => { S.info = t; };
+function fx(x, y, text, color) { S.fx.push({ x, y, text, color, t: Date.now() }); }
+
+function applyDamage(t, d) {
+  if (t.team === 'p') {
+    if (t.key === 'escudo') d = Math.max(1, d - 1);
+    if (t.shield) d = Math.max(1, d - 3);
+  }
+  t.hp -= d; fx(t.x, t.y, '-' + d, t.team === 'p' ? 'hostile' : 'friend');
+  if (t.hp <= 0) { t.hp = 0; t.alive = false; if (t.team === 'p') S.deaths++; fx(t.x, t.y, 'ABATIDO', 'amber'); }
+  return d;
+}
+
+function noise(x, y, r) {
+  for (const f of S.foes) if (f.alive && !f.alert && Math.abs(f.x - x) + Math.abs(f.y - y) <= r) f.alert = true;
+}
+function checkSpot() {
+  for (const f of S.foes) {
+    if (!f.alive || f.alert) continue;
+    if (S.units.some((u) => u.alive && dist(u, f) <= 8 && los(u.x, u.y, f.x, f.y))) {
+      f.alert = true;
+      if (S.vis[f.y][f.x]) { fx(f.x, f.y, '¡TE VIERON!', 'hostile'); setInfo('¡Te vieron! El enemigo se pone en alerta.'); }
+    }
+  }
+}
+
+function checkEnd() {
+  if (S.phase === 'over') return true;
+  if (!S.foes.some((f) => f.alive)) {
+    S.phase = 'over'; S.result = 'win';
+    S.stars = 1 + (S.deaths === 0 ? 1 : 0) + (S.deaths === 0 && S.turn <= MAPS[S.idx].par ? 1 : 0);
+    hooks.end(); return true;
+  }
+  if (!S.units.some((u) => u.alive)) { S.phase = 'over'; S.result = 'lose'; hooks.end(); return true; }
+  return false;
+}
+
+function selectNext() {
+  const n = S.units.length;
+  for (let i = 1; i <= n; i++) {
+    const j = (S.sel + i) % n; const u = S.units[j];
+    if (u.alive && u.ap > 0) { S.sel = j; return true; }
+  }
+  const f = S.units.findIndex((u) => u.alive); if (f >= 0) S.sel = f;
+  return false;
+}
+
+// ---------- Acciones del jugador ----------
+function move(u, x, y) {
+  u.ap--; u.x = x; u.y = y; S.tgt = null;
+  computeVis(); checkSpot();
+  if (S.info.startsWith('¡Te vieron') === false) setInfo(u.name + ' se mueve.');
+  hooks.change();
+}
+function openDoor(u, x, y) {
+  if (u.key !== 'escudo') u.ap--;
+  S.grid[y][x] = 'd'; noise(x, y, 6);
+  computeVis(); checkSpot();
+  setInfo(u.name + ' abre la puerta.' + (u.key === 'escudo' ? ' (gratis)' : ''));
+  hooks.change();
+}
+function describeTarget() {
+  const u = S.units[S.sel], t = S.tgt; if (!t) return;
+  if (!u || !u.alive) return;
+  if (inRange(u, t)) setInfo(t.name + ' ' + t.hp + '/' + t.max + ' PV · ' + hitChance(u, t) + '% de acierto. Pulsa DISPARAR.');
+  else setInfo(t.name + ' ' + t.hp + '/' + t.max + ' PV · fuera de alcance o sin línea de tiro.');
+}
+function fire() {
+  const u = S.units[S.sel], t = S.tgt;
+  if (S.phase !== 'player' || !u || !u.alive || u.ap < 1 || !t || !t.alive) return;
+  if (!inRange(u, t)) { describeTarget(); hooks.change(); return; }
+  u.ap--; const ch = hitChance(u, t); noise(u.x, u.y, 9);
+  if (Math.random() * 100 < ch) {
+    applyDamage(t, u.dmg); t.alert = true;
+    setInfo(u.name + ' acierta a ' + t.name + (t.alive ? '.' : ' y lo elimina.'));
+  } else { fx(t.x, t.y, 'FALLA', 'line'); setInfo(u.name + ' falla el disparo.'); t.alert = true; }
+  if (!t.alive) S.tgt = null; else describeTarget();
+  if (!checkEnd()) hooks.change();
+}
+
+function canSpecial(u) {
+  if (!u || !u.alive || S.phase !== 'player') return false;
+  const c = CLASSES[u.key];
+  if (u.ap < c.cost) return false;
+  if ((u.key === 'asalto' || u.key === 'medico') && u.uses < 1) return false;
+  return true;
+}
+function special() {
+  const u = S.units[S.sel]; if (!canSpecial(u)) return;
+  if (S.mode) { S.mode = null; setInfo('Acción cancelada.'); hooks.change(); return; }
+  if (u.key === 'escudo') { u.ap--; u.shield = true; fx(u.x, u.y, 'ESCUDO', 'friend'); setInfo('Escudo arriba: recibe 3 menos de daño hasta tu próximo turno.'); }
+  else if (u.key === 'asalto') { S.mode = 'flash'; setInfo('Flash: toca una casilla visible a 6 o menos.'); }
+  else if (u.key === 'sniper') { S.mode = 'snipe'; setInfo('Tiro certero: toca un enemigo visible (gasta 2 PA).'); }
+  else if (u.key === 'medico') { S.mode = 'heal'; setInfo('Botiquín: toca un aliado a 2 casillas o menos.'); }
+  hooks.change();
+}
+function tapMode(x, y) {
+  const u = S.units[S.sel]; const mode = S.mode;
+  if (!canSpecial(u)) { S.mode = null; hooks.change(); return; }
+  if (mode === 'flash') {
+    if (!inb(x, y) || !S.vis[y][x] || Math.hypot(x - u.x, y - u.y) > 6.5 || !los(u.x, u.y, x, y) || opaque(x, y)) { setInfo('Casilla fuera de alcance o sin visión. Elige otra.'); hooks.change(); return; }
+    u.ap--; u.uses--; S.mode = null; let n = 0;
+    for (const f of S.foes) {
+      if (f.alive && Math.hypot(f.x - x, f.y - y) <= 2.5 && los(x, y, f.x, f.y)) { f.stun = 1; f.alert = true; n++; fx(f.x, f.y, 'ATURDIDO', 'amber'); }
+    }
+    fx(x, y, 'FLASH', 'amber'); noise(x, y, 9);
+    setInfo(n ? 'Flash: ' + n + ' enemigo(s) aturdido(s) este turno.' : 'El flash no alcanza a nadie, pero hizo ruido.');
+  } else if (mode === 'snipe') {
+    const t = S.foes.find((f) => f.alive && f.x === x && f.y === y && S.vis[y][x]);
+    if (!t) { setInfo('Toca un enemigo visible.'); hooks.change(); return; }
+    if (!inRange(u, t)) { setInfo('Fuera de alcance o sin línea de tiro.'); hooks.change(); return; }
+    u.ap -= 2; S.mode = null; noise(u.x, u.y, 9); t.alert = true;
+    applyDamage(t, 6); setInfo('Tiro certero: ' + t.name + (t.alive ? ' herido.' : ' eliminado.'));
+    if (!t.alive) S.tgt = null;
+  } else if (mode === 'heal') {
+    const a = S.units.find((p) => p.alive && p.x === x && p.y === y);
+    if (!a || dist(u, a) > 2.5) { setInfo('Toca un aliado a 2 casillas o menos.'); hooks.change(); return; }
+    if (a.hp >= a.max) { setInfo(a.name + ' ya está al máximo.'); hooks.change(); return; }
+    u.ap--; u.uses--; S.mode = null; const h = Math.min(5, a.max - a.hp); a.hp += h;
+    fx(a.x, a.y, '+' + h, 'ok'); setInfo(u.name + ' cura ' + h + ' a ' + a.name + '.');
+  }
+  if (!checkEnd()) hooks.change();
+}
+
+function tap(x, y) {
+  if (S.phase !== 'player') return;
+  if (S.mode) { tapMode(x, y); return; }
+  const u = S.units[S.sel];
+  const own = S.units.find((p) => p.alive && p.x === x && p.y === y);
+  if (own) { S.sel = S.units.indexOf(own); S.tgt = null; setInfo(own.name + ' · ' + own.ap + ' PA. ' + CLASSES[own.key].desc); hooks.change(); return; }
+  const foe = S.foes.find((f) => f.alive && f.x === x && f.y === y && S.vis[y][x]);
+  if (foe) { S.tgt = foe; describeTarget(); hooks.change(); return; }
+  if (u && u.alive && u.ap > 0) {
+    if (tileAt(x, y) === 'D' && Math.abs(u.x - x) + Math.abs(u.y - y) === 1) { openDoor(u, x, y); return; }
+    if (reach(u).has(y * S.W + x)) { move(u, x, y); return; }
+  }
+  S.tgt = null; hooks.change();
+}
+
+// ---------- Turno enemigo ----------
+const passableFoe = (x, y) => inb(x, y) && '.,dD'.includes(S.grid[y][x]);
+function distFromPlayers() {
+  const k = (x, y) => y * S.W + x; const d = new Map(); const q = [];
+  for (const u of S.units) if (u.alive) { d.set(k(u.x, u.y), 0); q.push([u.x, u.y]); }
+  while (q.length) {
+    const [x, y] = q.shift(); const c = d.get(k(x, y));
+    for (const [dx, dy] of DIRS) {
+      const nx = x + dx, ny = y + dy;
+      if (d.has(k(nx, ny)) || !passableFoe(nx, ny)) continue;
+      d.set(k(nx, ny), c + 1); q.push([nx, ny]);
+    }
+  }
+  return d;
+}
+function foeMove(f) {
+  const k = (x, y) => y * S.W + x; const dP = distFromPlayers();
+  const dd = new Map([[k(f.x, f.y), 0]]); const par = new Map(); const q = [[f.x, f.y]];
+  while (q.length) {
+    const [x, y] = q.shift(); const c = dd.get(k(x, y)); if (c >= f.mov) continue;
+    for (const [ddx, ddy] of DIRS) {
+      const nx = x + ddx, ny = y + ddy;
+      if (dd.has(k(nx, ny)) || !passableFoe(nx, ny) || unitAt(nx, ny)) continue;
+      dd.set(k(nx, ny), c + 1); par.set(k(nx, ny), k(x, y)); q.push([nx, ny]);
+    }
+  }
+  let best = null, bs = 1e9;
+  for (const [kk] of dd) { const s = (dP.has(kk) ? dP.get(kk) : 999) + Math.random() * 0.4; if (s < bs) { bs = s; best = kk; } }
+  const here = k(f.x, f.y);
+  if (best === null || best === here) return false;
+  let cur = best;
+  while (cur !== here) { const x = cur % S.W, y = (cur / S.W) | 0; if (S.grid[y][x] === 'D') S.grid[y][x] = 'd'; cur = par.get(cur); }
+  f.x = best % S.W; f.y = (best / S.W) | 0;
+  return true;
+}
+function pickTarget(f) {
+  const ts = S.units.filter((u) => u.alive && inRange(f, u));
+  if (!ts.length) return null;
+  ts.sort((a, b) => a.hp - b.hp || hitChance(f, b) - hitChance(f, a));
+  return ts[0];
+}
+async function foeTurn(f) {
+  let ap = 2, moved = false;
+  while (ap > 0 && S.phase !== 'over') {
+    const t = pickTarget(f);
+    if (t) {
+      ap--; const ch = hitChance(f, t);
+      if (Math.random() * 100 < ch) { const d = applyDamage(t, f.dmg); setInfo(f.name + ' dispara a ' + t.name + ': -' + d + ' PV.'); }
+      else { fx(t.x, t.y, 'FALLA', 'line'); setInfo(f.name + ' dispara a ' + t.name + ' y falla.'); }
+      computeVis(); hooks.change();
+      if (checkEnd()) return;
+      await SLEEP(500);
+    } else if (!moved) {
+      moved = true;
+      if (foeMove(f)) { ap--; computeVis(); checkSpot(); hooks.change(); await SLEEP(350); } else break;
+    } else break;
+  }
+}
+async function endTurn() {
+  if (S.phase !== 'player') return;
+  S.phase = 'enemy'; S.mode = null; S.tgt = null; setInfo('Turno enemigo...'); hooks.change();
+  for (const f of S.foes) {
+    if (!f.alive) continue;
+    if (f.stun > 0) { f.stun--; continue; }
+    if (!f.alert) { checkSpot(); if (!f.alert) continue; }
+    S.actor = f; hooks.change(); await SLEEP(300);
+    await foeTurn(f); S.actor = null;
+    if (S.phase === 'over') return;
+  }
+  S.turn++;
+  for (const u of S.units) { u.ap = u.alive ? 2 : 0; u.shield = false; }
+  S.phase = 'player'; S.sel = Math.max(0, S.units.findIndex((u) => u.alive));
+  setInfo('Turno ' + S.turn + '. Tus operadores tienen 2 PA cada uno.'); hooks.change();
+}
+
+if (typeof module !== 'undefined') module.exports = { S, startLevel, tap, fire, special, endTurn, selectNext, reach, hooks, canSpecial, setSleep: (f) => { SLEEP = f; } };
+
+'use strict';
+const $ = (id) => document.getElementById(id);
+const KEY = 'swat-entrada-forzada-v1';
+let progress = { stars: [] };
+try { const raw = localStorage.getItem(KEY); if (raw) progress = JSON.parse(raw); } catch (e) { /* sin almacenamiento */ }
+const saveProgress = () => { try { localStorage.setItem(KEY, JSON.stringify(progress)); } catch (e) { /* ignorar */ } };
+
+let squad = ['asalto', 'sniper', 'escudo'];
+let curLevel = 0;
+let fichaKey = 'asalto';
+const cssv = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let C = {};
+
+function show(id) { ['menu', 'squad', 'game'].forEach((s) => { $(s).hidden = s !== id; }); $('result').hidden = true; }
+
+// ---------- Menú ----------
+function renderMenu() {
+  const box = $('levels'); box.innerHTML = '';
+  MAPS.forEach((m, i) => {
+    const open = i === 0 || (progress.stars[i - 1] || 0) > 0;
+    const s = progress.stars[i] || 0;
+    const b = document.createElement('button');
+    b.className = 'lvl'; b.disabled = !open;
+    b.innerHTML = '<h3>' + (i + 1) + '. ' + m.name + '</h3><span class="stars" aria-label="' + s + ' de 3 estrellas">' + '★'.repeat(s) + '☆'.repeat(3 - s) + '</span><p>' + m.brief + '</p>';
+    b.addEventListener('click', () => openSquad(i));
+    box.appendChild(b);
+  });
+  show('menu');
+}
+
+// ---------- Equipo ----------
+function openSquad(i) {
+  curLevel = i; $('sq-title').textContent = MAPS[i].name; $('sq-brief').textContent = MAPS[i].brief;
+  $('sq-par').textContent = 'Enemigos: ' + MAPS[i].rows.join('').replace(/[^meb]/g, '').length + ' · 3 estrellas si terminas sin bajas en ' + MAPS[i].par + ' turnos o menos';
+  renderSquad(); show('squad');
+}
+function renderSquad() {
+  const box = $('slots'); box.innerHTML = '';
+  squad.forEach((key, i) => {
+    const slot = document.createElement('div'); slot.className = 'slot';
+    slot.innerHTML = '<span class="kicker">Operador ' + (i + 1) + '</span>';
+    const opts = document.createElement('div'); opts.className = 'slot-opts';
+    Object.keys(CLASSES).forEach((k) => {
+      const b = document.createElement('button'); b.className = 'slot-opt'; b.textContent = CLASSES[k].name; b.setAttribute('aria-pressed', String(squad[i] === k));
+      b.addEventListener('click', () => { squad[i] = k; fichaKey = k; renderSquad(); });
+      opts.appendChild(b);
+    });
+    slot.appendChild(opts); box.appendChild(slot);
+  });
+  const c = CLASSES[fichaKey];
+  $('ficha').innerHTML = '<h3>' + c.name + '</h3><dl><div><dt>Vida</dt><dd>' + c.hp + '</dd></div><div><dt>Mov</dt><dd>' + c.mov + '</dd></div><div><dt>Alcance</dt><dd>' + c.rng + '</dd></div><div><dt>Daño</dt><dd>' + c.dmg + '</dd></div></dl><div>' + c.desc + '</div>';
+}
+
+// ---------- Juego ----------
+const cv = $('cv'); const ctx = cv.getContext('2d');
+let T = 30, dpr = 1;
+function startGame() {
+  startLevel(curLevel, squad.slice());
+  $('hud-title').textContent = MAPS[curLevel].name; show('game'); layout(); renderUI();
+}
+function layout() {
+  if (!S.W) return;
+  const b = $('board'); const w = b.clientWidth, h = b.clientHeight;
+  T = Math.max(16, Math.floor(Math.min(w / S.W, h / S.H)));
+  dpr = window.devicePixelRatio || 1;
+  cv.style.width = T * S.W + 'px'; cv.style.height = T * S.H + 'px';
+  cv.width = Math.round(T * S.W * dpr); cv.height = Math.round(T * S.H * dpr);
+}
+window.addEventListener('resize', layout);
+
+function renderUI() {
+  $('hud-turn').textContent = 'Turno ' + S.turn + ' · Enemigos ' + S.foes.filter((f) => f.alive).length;
+  const r = $('roster'); r.innerHTML = '';
+  S.units.forEach((u, i) => {
+    const b = document.createElement('button'); b.className = 'chip' + (u.alive ? '' : ' dead'); b.setAttribute('aria-pressed', String(i === S.sel && u.alive));
+    const ap = '<span class="ap">' + [0, 1].map((n) => '<span class="' + (n < u.ap ? 'on' : '') + '"></span>').join('') + '<em style="font-style:normal">' + u.hp + '/' + u.max + '</em></span>';
+    b.innerHTML = '<b>' + u.name + (u.shield ? ' ◈' : '') + '</b><div class="bar"><i style="width:' + Math.round((u.hp / u.max) * 100) + '%"></i></div>' + ap;
+    b.addEventListener('click', () => { if (S.phase !== 'player' || !u.alive) return; S.mode = null; S.sel = i; S.tgt = null; hooks.change(); });
+    r.appendChild(b);
+  });
+  $('info').textContent = S.info;
+  const u = S.units[S.sel]; const mine = S.phase === 'player';
+  const ch = u && S.tgt && S.tgt.alive && inRange(u, S.tgt) ? hitChance(u, S.tgt) : null;
+  $('btn-fire').disabled = !(mine && u && u.alive && u.ap > 0 && S.tgt && S.tgt.alive);
+  $('btn-fire').textContent = ch ? 'Disparar ' + ch + '%' : 'Disparar';
+  const c = u ? CLASSES[u.key] : null;
+  $('btn-special').disabled = !(mine && canSpecial(u));
+  $('btn-special').textContent = S.mode ? 'Cancelar' : c ? c.special + (c.uses ? ' (' + u.uses + ')' : '') : 'Especial';
+  $('btn-next').disabled = !mine;
+  $('btn-end').disabled = !mine;
+}
+hooks.change = renderUI;
+hooks.end = () => {
+  renderUI();
+  const win = S.result === 'win'; const box = $('result');
+  box.className = 'overlay ' + (win ? 'win' : 'lose'); box.hidden = false;
+  if (win) {
+    const prev = progress.stars[curLevel] || 0; if (S.stars > prev) { progress.stars[curLevel] = S.stars; saveProgress(); }
+    const last = curLevel >= MAPS.length - 1;
+    $('res-body').innerHTML = '<span class="kicker">Misión cumplida</span><h2>Casa despejada</h2><div class="stars" aria-label="' + S.stars + ' de 3 estrellas">' + '★'.repeat(S.stars) + '☆'.repeat(3 - S.stars) + '</div><div class="dim">' + S.turn + ' turnos · ' + S.deaths + ' baja(s)</div>' +
+      (last ? '' : '<button class="btn primary" id="res-next">Siguiente misión</button>') + '<button class="btn" id="res-retry">Repetir</button><button class="btn" id="res-menu">Menú</button>';
+    const nx = $('res-next'); if (nx) nx.addEventListener('click', () => { openSquad(curLevel + 1); });
+  } else {
+    $('res-body').innerHTML = '<span class="kicker">Misión fallida</span><h2>Equipo abatido</h2><div class="dim">Prueba otra mezcla de clases o abre las puertas con más cuidado.</div><button class="btn primary" id="res-retry">Reintentar</button><button class="btn" id="res-squad">Elegir equipo</button><button class="btn" id="res-menu">Menú</button>';
+    const sq = $('res-squad'); if (sq) sq.addEventListener('click', () => openSquad(curLevel));
+  }
+  $('res-retry').addEventListener('click', () => { startGame(); });
+  $('res-menu').addEventListener('click', renderMenu);
+};
+
+cv.addEventListener('pointerdown', (e) => {
+  const r = cv.getBoundingClientRect(); const x = Math.floor((e.clientX - r.left) / T), y = Math.floor((e.clientY - r.top) / T);
+  if (x < 0 || y < 0 || x >= S.W || y >= S.H) return; tap(x, y);
+});
+
+// ---------- Dibujo ----------
+function tileColor(ch) { return ch === ',' ? C.yard : C.floor; }
+function draw() {
+  requestAnimationFrame(draw);
+  if (!S.W || $('game').hidden) return;
+  const now = Date.now(); const pulse = 0.5 + 0.5 * Math.sin(now / 260);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, S.W * T, S.H * T);
+  ctx.fillStyle = C.void; ctx.fillRect(0, 0, S.W * T, S.H * T);
+  const u = S.units[S.sel]; const mine = S.phase === 'player';
+  const rch = mine && u && u.alive && u.ap > 0 && !S.mode ? reach(u) : null;
+  for (let y = 0; y < S.H; y++) for (let x = 0; x < S.W; x++) {
+    if (!S.explored[y][x]) continue;
+    const ch = S.grid[y][x]; const px = x * T, py = y * T;
+    if (ch === '#') { ctx.fillStyle = C.wall; ctx.fillRect(px, py, T, T); ctx.strokeStyle = C.paper; ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.moveTo(px, py + T); ctx.lineTo(px + T, py); ctx.stroke(); ctx.globalAlpha = 1; }
+    else {
+      ctx.fillStyle = tileColor(ch); ctx.fillRect(px, py, T, T);
+      ctx.strokeStyle = 'rgba(211,228,246,0.07)'; ctx.lineWidth = 1; ctx.strokeRect(px + 0.5, py + 0.5, T - 1, T - 1);
+      if (ch === 'c') { ctx.fillStyle = C.furn; ctx.fillRect(px + 3, py + 3, T - 6, T - 6); ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.strokeRect(px + 3, py + 3, T - 6, T - 6); ctx.beginPath(); ctx.moveTo(px + 3, py + 3); ctx.lineTo(px + T - 3, py + T - 3); ctx.moveTo(px + T - 3, py + 3); ctx.lineTo(px + 3, py + T - 3); ctx.globalAlpha = 0.4; ctx.stroke(); ctx.globalAlpha = 1; }
+      if (ch === 'D') { ctx.fillStyle = C.amber; ctx.fillRect(px + 2, py + T * 0.38, T - 4, T * 0.24); }
+      if (ch === 'd') { ctx.strokeStyle = C.amber; ctx.lineWidth = 2; ctx.setLineDash([4, 3]); ctx.strokeRect(px + 3, py + 3, T - 6, T - 6); ctx.setLineDash([]); }
+    }
+    if (!S.vis[y][x]) { ctx.fillStyle = 'rgba(5,18,34,0.58)'; ctx.fillRect(px, py, T, T); }
+  }
+  if (rch) {
+    ctx.fillStyle = 'rgba(90,209,255,0.2)';
+    for (const k of rch.keys()) { const x = k % S.W, y = (k / S.W) | 0; ctx.fillRect(x * T, y * T, T, T); ctx.fillStyle = 'rgba(90,209,255,0.55)'; ctx.beginPath(); ctx.arc(x * T + T / 2, y * T + T / 2, T * 0.07, 0, 7); ctx.fill(); ctx.fillStyle = 'rgba(90,209,255,0.2)'; }
+  }
+  if (mine && u && u.alive && u.ap > 0 && !S.mode) {
+    ctx.strokeStyle = C.amber; ctx.lineWidth = 2;
+    for (const [dx, dy] of DIRS) if (S.grid[u.y + dy] && S.grid[u.y + dy][u.x + dx] === 'D') { ctx.globalAlpha = 0.4 + 0.6 * pulse; ctx.strokeRect((u.x + dx) * T + 1, (u.y + dy) * T + 1, T - 2, T - 2); ctx.globalAlpha = 1; }
+  }
+  if (S.mode && u) {
+    ctx.fillStyle = 'rgba(245,196,78,0.16)';
+    for (let y = 0; y < S.H; y++) for (let x = 0; x < S.W; x++) {
+      const ok = S.mode === 'flash' ? S.vis[y][x] && S.grid[y][x] !== '#' && Math.hypot(x - u.x, y - u.y) <= 6.5 && los(u.x, u.y, x, y)
+        : S.mode === 'heal' ? Math.hypot(x - u.x, y - u.y) <= 2.5 : false;
+      if (ok) ctx.fillRect(x * T, y * T, T, T);
+    }
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const f of S.foes) {
+    if (!f.alive || !S.vis[f.y][f.x]) continue;
+    const cx = f.x * T + T / 2, cy = f.y * T + T / 2, r = T * 0.38;
+    ctx.fillStyle = C.hostile; ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy + r * 0.8); ctx.lineTo(cx - r, cy + r * 0.8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#2b0d05'; ctx.font = '700 ' + Math.round(T * 0.36) + 'px ' + C.fontD; ctx.fillText(f.kind === 'b' ? 'J' : f.kind === 'e' ? 'E' : 'M', cx, cy + r * 0.2);
+    hpBar(f, f.x * T, f.y * T - 1);
+    if (f.stun > 0) { ctx.fillStyle = C.amber; ctx.fillText('z', cx + r, cy - r); }
+    else if (f.alert) { ctx.fillStyle = C.hostile; ctx.font = '700 ' + Math.round(T * 0.4) + 'px ' + C.fontD; ctx.fillText('!', cx + r, cy - r); }
+    if (S.actor === f) { ctx.strokeStyle = C.hostile; ctx.lineWidth = 2; ctx.strokeRect(f.x * T + 1, f.y * T + 1, T - 2, T - 2); }
+    if (S.tgt === f) {
+      ctx.strokeStyle = C.amber; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(cx, cy, T * 0.5, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  S.units.forEach((p, i) => {
+    if (!p.alive) return;
+    const cx = p.x * T + T / 2, cy = p.y * T + T / 2, r = T * 0.36;
+    ctx.fillStyle = C.friend; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#04202f'; ctx.font = '700 ' + Math.round(T * 0.4) + 'px ' + C.fontD; ctx.fillText(CLASSES[p.key].letter, cx, cy + 1);
+    if (p.shield) { ctx.strokeStyle = C.line; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, 7); ctx.stroke(); }
+    if (i === S.sel && mine) { ctx.strokeStyle = C.amber; ctx.lineWidth = 2; ctx.globalAlpha = 0.5 + 0.5 * pulse; ctx.beginPath(); ctx.arc(cx, cy, r + 5, 0, 7); ctx.stroke(); ctx.globalAlpha = 1; }
+    hpBar(p, p.x * T, p.y * T - 1);
+  });
+  S.fx = S.fx.filter((f) => now - f.t < 1100);
+  ctx.font = '700 ' + Math.round(T * 0.4) + 'px ' + C.fontD;
+  for (const f of S.fx) {
+    const a = 1 - (now - f.t) / 1100; ctx.globalAlpha = Math.max(0, a); ctx.fillStyle = C[f.color] || C.line;
+    ctx.strokeStyle = C.paper; ctx.lineWidth = 3; const tx = f.x * T + T / 2, ty = f.y * T - ((now - f.t) / 1100) * T * 0.9 + T * 0.2;
+    ctx.strokeText(f.text, tx, ty); ctx.fillText(f.text, tx, ty); ctx.globalAlpha = 1;
+  }
+}
+function hpBar(e, px, py) {
+  const w = T * 0.7, x = px + (T - w) / 2;
+  ctx.fillStyle = 'rgba(5,18,34,0.8)'; ctx.fillRect(x, py + 1, w, 3);
+  ctx.fillStyle = e.team === 'p' ? C.ok : C.hostile; ctx.fillRect(x, py + 1, w * (e.hp / e.max), 3);
+}
+
+// ---------- Botones ----------
+$('btn-start').addEventListener('click', () => { curLevel = 0; openSquad(0); });
+$('sq-back').addEventListener('click', renderMenu);
+$('sq-go').addEventListener('click', startGame);
+$('btn-menu').addEventListener('click', () => { S.phase = 'over'; renderMenu(); });
+$('btn-fire').addEventListener('click', fire);
+$('btn-special').addEventListener('click', special);
+$('btn-next').addEventListener('click', () => { S.mode = null; selectNext(); S.tgt = null; renderUI(); });
+$('btn-end').addEventListener('click', endTurn);
+
+function init() {
+  C = { paper: cssv('--paper'), void: cssv('--paper-3'), floor: cssv('--paper-2'), yard: '#0f3a4d', wall: '#bcd3ea', furn: '#1b4a75', line: cssv('--line'), friend: cssv('--friend'), hostile: cssv('--hostile'), amber: cssv('--amber'), ok: cssv('--ok'), fontD: "'Chakra Petch', system-ui, sans-serif" };
+  renderMenu(); requestAnimationFrame(draw);
+}
+(document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(init, init);
+
+</script>
+
+</body></html>
